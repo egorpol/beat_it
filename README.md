@@ -22,13 +22,13 @@ We suggest using [Conda](https://docs.conda.io/en/latest/) to create a new virtu
 1. Create a new environment:
 
     ```bash
-    conda create -n gfm_eallm python=3.11
+    conda create -n beat_it python=3.11
     ```
 
 2. Activate the environment:
 
     ```bash
-    conda activate gfm_eallm
+    conda activate beat_it
     ```
 
 3. Install the required packages:
