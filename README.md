@@ -7,9 +7,9 @@ The repository contains Jupyter notebooks that demonstrate techniques for analyz
 
 ## Repository Structure
 
-- **/examples**: Audio example files used in the analysis.
-- **/csv**: Corresponding cue points and annotations in CSV format.
-- **/sv**: Sonic Visualizer projects with annotations.
+- **/examples/**: Audio example files used in the analysis.
+- **/csv/**: Corresponding cue points and annotations in CSV format.
+- **/sv/**: Sonic Visualizer projects with annotations.
 
 ## Prerequisites
 
