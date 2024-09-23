@@ -49,6 +49,13 @@ pip install crepe parselmouth tensorflow
 
 Once you have set up the environment and installed the required packages, you can run the Jupyter notebooks to explore various analyses.
 
+## Colab Notebooks
+
+The Jupyter notebooks are also available for use in Google Colab. You can access and run the notebooks directly from the following Colab folder:
+
+[Colab Folder for Notebooks](https://drive.google.com/drive/folders/1cMQOTImAuaW0he8JIG6GxjjL297TnY-a?usp=sharing)
+
+
 ### Running Jupyter Notebooks
 
 Start Jupyter by running:
