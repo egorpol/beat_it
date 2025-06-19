@@ -4,7 +4,7 @@
 
 **Disclaimer:** This project is currently in a very early alpha stage of development. A first alpha version is planned for release later this year.
 
-This repository supports the workshop "**How Constant Is Your Beat? Computer-Assisted Analysis of Beat and Tempo Fluctuations from Acousmatic Music to Minimal Techno with 'beat_it' Toolbox**," presented at the [Rhythm under the Microscope](https://www.mdw.ac.at/ipop/rhythm-under-the-microscope/) conference (University of Music and Performing Arts Vienna, 25-27 September 2024). It also accompanies the presentation "**Understanding and Emulating Time: Analyzing and Simulating Musical Microrhythm Timing with the beat_it Toolbox**" at the [inmusic25](https://www.inmusicconference.com/) conference.
+This repository supports the workshop "**How Constant Is Your Beat? Computer-Assisted Analysis of Beat and Tempo Fluctuations from Acousmatic Music to Minimal Techno with 'beat_it' Toolbox**," presented at the [Rhythm under the Microscope](https://www.ipop.at/rhythm/) conference (University of Music and Performing Arts Vienna, 25-27 September 2024). It also accompanies the presentation "**Understanding and Emulating Time: Analyzing and Simulating Musical Microrhythm Timing with the beat_it Toolbox**" at the [inmusic25](https://www.inmusicconference.com/) conference.
 
 The repository provides Jupyter notebooks that demonstrate techniques for analyzing beat and tempo fluctuations using the **beat_it** Python toolbox. It also includes all the necessary audio examples and annotations.
 
