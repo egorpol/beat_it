@@ -15,6 +15,7 @@ The repository provides Jupyter notebooks that demonstrate techniques for analyz
 -   `**/sv/`**: Provides annotation layers for import into Sonic Visualizer.
 -   `**/sv_project_files/`**: Contains complete Sonic Visualizer project files (`.sv`).
     -   *Note:* Audio files may need to be manually relinked from the `/examples/` directory after opening a project.
+-   `**/slides/`**: Slides from presentations at [Rhythm under the Microscope](https://www.ipop.at/rhythm/) and [inmusic25](https://www.inmusicconference.com/)
 
 ## Getting Started
 
