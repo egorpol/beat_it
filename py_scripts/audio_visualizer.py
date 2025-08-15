@@ -25,68 +25,108 @@ FEATURE_LABELS = {
     'phase_flux': 'Phase Flux'
 }
 
-def _time_str_to_seconds(time_str: str) -> float:
-    """
-    Converts a flexible time string to seconds.
-    Supports formats like: 'SS.fff', 'MM:SS.fff', 'HH:MM:SS.fff'.
-    Examples: '10.5', '01:30.250', '00:01:30.5'.
-    """
-    time_str = time_str.strip()
-    parts = time_str.split(':')
-    
-    if len(parts) == 1:  # Only seconds (e.g., '10.5')
-        return float(parts[0])
-    
-    if len(parts) == 2:  # M:S (e.g., '01:30.5')
-        minutes, seconds = parts
-        return float(minutes) * 60 + float(seconds)
-        
-    if len(parts) == 3:  # H:M:S (e.g., '00:01:30.5')
-        hours, minutes, seconds = parts
-        return float(hours) * 3600 + float(minutes) * 60 + float(seconds)
-        
-    raise ValueError(f"Invalid time format: '{time_str}'. Use SS.fff, MM:SS.fff, or HH:MM:SS.fff.")
+# --- add imports near the top ---
+import re
+from typing import Tuple
 
-def _parse_time_slice(time_slice: str) -> tuple[float, float]:
-    """Parses a 'start-end' string into offset and duration."""
+# --- time parsing helpers ---
+_FALLBACK_FPS = 30.0
+_FPS_ALIAS = {
+    '23.976': 24000/1001,
+    '29.97':  30000/1001,
+    '59.94':  60000/1001,
+    '75':     75.0,     # CD-DA
+}
+_RANGE_SPLIT = re.compile(r'\s*[-–—]\s*')  # hyphen / en dash / em dash
+
+# SMPTE HH:MM:SS:FF or HH:MM:SS;FF with optional @fps / fps suffix
+_TC_RE = re.compile(
+    r'^\s*(?P<h>\d{1,2})[:;](?P<m>\d{2})[:;](?P<s>\d{2})[:;](?P<f>\d{2})'
+    r'(?:\s*@\s*(?P<fps>[\d.]+)\s*(?:fps)?)?\s*$',
+    re.IGNORECASE
+)
+# Clock HH:MM:SS(.mmm) or MM:SS(.mmm)
+_CLOCK_RE = re.compile(
+    r'^\s*(?:(?P<h>\d{1,2}):)?(?P<m>\d{1,2}):(?P<s>\d{1,2}(?:[.,]\d+)?)\s*$'
+)
+# Plain seconds (optionally with unit)
+_SEC_RE = re.compile(r'^\s*(?P<s>\d+(?:[.,]\d+)?)\s*(?:s|sec|seconds?)?\s*$', re.IGNORECASE)
+
+def _parse_fps(txt: str | None) -> float:
+    if not txt:
+        return _FALLBACK_FPS
+    s = txt.lower().replace('fps', '').replace('df', '').strip()
+    if s in _FPS_ALIAS:
+        return float(_FPS_ALIAS[s])
     try:
-        start_str, end_str = time_slice.split('-')
-        start_s = _time_str_to_seconds(start_str)
-        end_s = _time_str_to_seconds(end_str)
-        if end_s <= start_s:
-            raise ValueError("End time must be after start time.")
-        return start_s, end_s - start_s
-    except ValueError as e:
-        raise ValueError(f"Invalid time slice format '{time_slice}'. Use formats like '10.5-20.75' or '00:10.5-00:20.75'.") from e
+        return float(s)
+    except Exception:
+        return _FALLBACK_FPS
 
-def load_audio(
-    path: str,
-    sr: Optional[int] = None,
-    time_slice: Optional[str] = None
-) -> tuple[np.ndarray, int]:
+def parse_timestamp(ts: str, default_fps: float = _FALLBACK_FPS) -> float:
+    """Return seconds from a time string."""
+    t = ts.strip()
+    m = _TC_RE.match(t)
+    if m:
+        fps = _parse_fps(m.group('fps')) or default_fps
+        h = int(m['h']); mi = int(m['m']); s = int(m['s']); f = int(m['f'])
+        return h*3600 + mi*60 + s + f / fps
+
+    m = _CLOCK_RE.match(t.replace(';', ':'))
+    if m:
+        h = int(m.group('h') or 0)
+        mi = int(m.group('m'))
+        s = float(m.group('s').replace(',', '.'))
+        return h*3600 + mi*60 + s
+
+    m = _SEC_RE.match(t)
+    if m:
+        return float(m['s'].replace(',', '.'))
+
+    raise ValueError(f"Unrecognized time format: {ts!r}")
+
+def parse_time_range(spec: str, default_fps: float = _FALLBACK_FPS) -> Tuple[float, float | None]:
     """
-    Load an audio file or a slice of it.
-
-    Args:
-        path (str): Path to the audio file.
-        sr (int, optional): Target sample rate. Defaults to None.
-        time_slice (str, optional): Slice to load, e.g., "10-20" or "00:10-00:20".
-                                    Defaults to None (loads full file).
-
-    Returns:
-        tuple[np.ndarray, int]: Audio time series and sample rate.
+    Parse 'start-end' into (offset, duration) in seconds.
+    If only 'start' is given, duration is None (to EOF).
     """
-    offset, duration = None, None
-    load_msg = f"Loaded '{path}'"
+    parts = _RANGE_SPLIT.split(spec.strip(), maxsplit=1)
+    start = parse_timestamp(parts[0], default_fps=default_fps)
+    if len(parts) == 1 or not parts[1]:
+        return start, None
+    end = parse_timestamp(parts[1], default_fps=default_fps)
+    if end < start:
+        raise ValueError(f"End before start in range {spec!r}")
+    return start, end - start
 
-    if time_slice:
-        offset, duration = _parse_time_slice(time_slice)
-        load_msg = f"Loaded slice {offset:.2f}s-{offset+duration:.2f}s from '{path}'"
+
+def load_audio(path: str,
+               sr: Optional[int] = None,
+               offset: float = 0.0,
+               duration: Optional[float] = None,
+               time_range: Optional[str] = None) -> tuple[np.ndarray, int]:
+    """
+    Load audio (optionally a slice).
+    - time_range: 'start-end' using HH:MM:SS.mmm, SMPTE HH:MM:SS:FF[@fps], or CD-DA MM:SS:FF@75.
+      Examples: '00:10-00:20', '01:02:03.250-01:02:13.250', '00:00:04:12@25-00:00:14:00@25'
+    - If provided, time_range overrides offset/duration.
+    """
+    if time_range:
+        offset, duration = parse_time_range(time_range)
+
+    # Try to get total duration without decoding
+    try:
+        total = librosa.get_duration(path=path)
+    except Exception:
+        total = None
 
     y, sr = librosa.load(path, sr=sr, offset=offset, duration=duration)
-    total_duration = librosa.get_duration(y=y, sr=sr)
-    
-    print(f"{load_msg} -> {total_duration:.2f}s @ {sr}Hz")
+    seg_dur = librosa.get_duration(y=y, sr=sr)
+
+    if total is not None and (offset > 0 or duration is not None):
+        print(f"Loaded '{path}' -> segment {offset:.3f}–{offset+seg_dur:.3f}s of {total:.3f}s @ {sr}Hz")
+    else:
+        print(f"Loaded '{path}' -> {seg_dur:.3f}s @ {sr}Hz")
     return y, sr
 
 
@@ -170,30 +210,78 @@ def detect_onsets(
     )
     return librosa.frames_to_time(frames, sr=sr, hop_length=hop_length)
 
-
 def visualize_features(
     features: Dict[str, Any],
     sr: int,
     hop_length: int,
-    # Updated type hint to show it can be a list, array, or dict
     onset_times: Optional[Union[np.ndarray, list, dict]] = None,
     features_to_plot: List[str] = None,
-    backend: str = 'matplotlib'
+    backend: str = 'matplotlib',
+    *,
+    time_range: Optional[str] = None,
+    t_start: Optional[float] = None,
+    onsets_are_absolute: bool = False,
+    grayscale: bool = False,
+    grayscale_cmap: str = 'gray',
+    font_family: Optional[str] = None,
+    font_scale: float = 1.0,
+    dpi: Optional[int] = None,
+    figsize: Optional[tuple] = None,
+    save_path: Optional[str] = None
 ) -> None:
-    valid = list(features.keys())
-    if features_to_plot is None:
-        features_to_plot = ['waveform', 'stft_db', 'spectral_flux']
-    features_to_plot = [f for f in features_to_plot if f in valid]
+    # Derive t_start automatically if not provided
+    if t_start is None:
+        t_start = parse_time_range(time_range)[0] if time_range else 0.0
+
+    # Shift onsets if they are relative to the slice
+    def _shift_onsets(ot):
+        if ot is None or onsets_are_absolute or not t_start:
+            return ot
+        if isinstance(ot, (list, np.ndarray)):
+            return np.asarray(ot, dtype=float) + t_start
+        shifted = {}
+        for k, v in ot.items():
+            vv = dict(v)
+            vv['times'] = np.asarray(v['times'], dtype=float) + t_start
+            shifted[k] = vv
+        return shifted
+
+    onset_times = _shift_onsets(onset_times)
 
     if backend.lower() == 'matplotlib':
-        _plot_matplotlib(features, sr, hop_length, onset_times, features_to_plot)
+        _plot_matplotlib(
+            features,
+            sr,
+            hop_length,
+            onset_times,
+            features_to_plot,
+            t_start,
+            grayscale=grayscale,
+            grayscale_cmap=grayscale_cmap,
+            font_family=font_family,
+            font_scale=font_scale,
+            dpi=dpi,
+            figsize=figsize,
+            save_path=save_path,
+        )
     elif backend.lower() == 'bokeh':
         from bokeh.io import show
         from bokeh.layouts import column
-        plots = _plot_bokeh(features, sr, hop_length, onset_times, features_to_plot)
+        plots = _plot_bokeh(
+            features,
+            sr,
+            hop_length,
+            onset_times,
+            features_to_plot,
+            t_start,
+            grayscale=grayscale,
+            font_scale=font_scale,
+        )
         show(column(*plots))
     else:
         raise ValueError(f"Unknown backend: {backend}")
+
+
 
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
@@ -208,77 +296,63 @@ def _plot_matplotlib(
     sr: int,
     hop_length: int,
     onset_times: Optional[Union[np.ndarray, list, dict]],
-    features_to_plot: List[str]
+    features_to_plot: List[str],
+    t_start: float
 ) -> None:
     n = len(features_to_plot)
-    # Turn on constrained_layout here:
-    fig, axes = plt.subplots(n, 1, figsize=(14, 4*n),
-                             sharex=True, constrained_layout=True)
+    fig, axes = plt.subplots(n, 1, figsize=(14, 4*n), sharex=True, constrained_layout=True)
     if n == 1:
         axes = [axes]
 
-    duration = librosa.get_duration(y=features['waveform'], sr=sr)
+    seg_duration = librosa.get_duration(y=features['waveform'], sr=sr)
 
-    # Build one set of legend handles up front
     global_legend_handles = []
     if isinstance(onset_times, dict):
         for label, data_dict in onset_times.items():
             color = data_dict.get('color', 'r')
-            proxy = Line2D([0], [0], linestyle='--',
-                           color=color, label=label)
+            proxy = Line2D([0], [0], linestyle='--', color=color, label=label)
             global_legend_handles.append(proxy)
 
-    # Plot each feature + its onset lines
     for ax, name in zip(axes, features_to_plot):
         data = features[name]
-
-        # 1D vs 2D plotting
         if data.ndim == 1:
             if name == 'waveform':
                 arr = data[::max(1, len(data)//10000)]
-                times = np.linspace(0, duration, len(arr))
+                times = t_start + np.linspace(0, seg_duration, len(arr))
             else:
+                times = t_start + librosa.times_like(data, sr=sr, hop_length=hop_length)
                 arr = data
-                times = librosa.times_like(data, sr=sr,
-                                           hop_length=hop_length)
             ax.plot(times, arr)
             ax.set_ylabel(FEATURE_LABELS.get(name, name))
         else:
+            # Time-aligned spectrogram using explicit x_coords
+            frame_times = t_start + librosa.times_like(data, sr=sr, hop_length=hop_length)
             y_axis = 'mel' if 'melspectrogram' in name else 'linear'
             librosa.display.specshow(
                 data, sr=sr, hop_length=hop_length,
-                x_axis='time', y_axis=y_axis, ax=ax
+                x_axis='time', y_axis=y_axis, ax=ax, x_coords=frame_times
             )
-            ax.set_ylabel('Freq' + (' (Hz)' if y_axis=='linear'
-                                    else ' (Mel)'))
+            ax.set_ylabel('Freq' + (' (Hz)' if y_axis == 'linear' else ' (Mel)'))
 
-        # Onset lines
         if onset_times is not None:
             ymin, ymax = ax.get_ylim()
             if isinstance(onset_times, (list, np.ndarray)):
-                ax.vlines(onset_times, ymin, ymax,
-                          color='r', linestyle='--')
+                ax.vlines(onset_times, ymin, ymax, color='r', linestyle='--')
             else:
                 for onset_data in onset_times.values():
                     ax.vlines(onset_data['times'], ymin, ymax,
-                              color=onset_data.get('color', 'r'),
-                              linestyle='--')
+                              color=onset_data.get('color', 'r'), linestyle='--')
 
-    # Final formatting
     for ax in axes:
         ax.xaxis.set_major_formatter(ticker.ScalarFormatter())
         ax.tick_params(axis='x', labelbottom=True)
         ax.set_xlabel('Time (s)')
 
-    # One global legend in upper‐right, inside the figure padding
     if global_legend_handles:
-        fig.legend(
-            handles=global_legend_handles,
-            loc='upper right',
-            borderaxespad=1.0
-        )
+        fig.legend(handles=global_legend_handles, loc='upper right', borderaxespad=1.0)
 
     plt.show()
+
 
 
 from typing import Dict, Any, List, Optional, Union
@@ -294,78 +368,63 @@ def _plot_bokeh(
     sr: int,
     hop_length: int,
     onset_times: Optional[Union[np.ndarray, list, dict]],
-    features_to_plot: List[str]
+    features_to_plot: List[str],
+    t_start: float
 ) -> List[Any]:
-
     plots: List[Any] = []
-    duration = librosa.get_duration(y=features['waveform'], sr=sr)
+    seg_duration = librosa.get_duration(y=features['waveform'], sr=sr)
     tools = 'pan,wheel_zoom,box_zoom,reset,save'
 
     for i, name in enumerate(features_to_plot):
-
-        # --- one shared x-range ---
         if i == 0:
-            p = figure(width=1400, height=400,
-                       x_axis_label='Time (s)', tools=tools)
+            p = figure(width=1400, height=400, x_axis_label='Time (s)', tools=tools)
         else:
-            p = figure(width=1400, height=400,
-                       x_axis_label='Time (s)', tools=tools,
-                       x_range=plots[0].x_range)   # shared
+            p = figure(width=1400, height=400, x_axis_label='Time (s)', tools=tools,
+                       x_range=plots[0].x_range)
         label = FEATURE_LABELS.get(name, name.replace('_', ' ').title())
         p.title.text = label
 
-        # --- draw waveform / spectrum ---
         data = features[name]
         if data.ndim == 1:
             arr = data[::max(1, len(data)//5000)] if name == 'waveform' else data
-            times = (np.linspace(0, duration, len(arr)) if name == 'waveform'
-                     else librosa.times_like(data, sr=sr, hop_length=hop_length))
+            times = (t_start + np.linspace(0, seg_duration, len(arr))
+                     if name == 'waveform'
+                     else t_start + librosa.times_like(data, sr=sr, hop_length=hop_length))
             p.line(times, arr, line_width=1)
             p.yaxis.axis_label = label
         else:
-            mapper = LinearColorMapper(palette='Viridis256',
-                                       low=np.min(data), high=np.max(data))
+            mapper = LinearColorMapper(palette='Viridis256', low=np.min(data), high=np.max(data))
             if 'melspectrogram' in name:
-                y0, dy = 0, data.shape[0]
-                p.y_range = Range1d(y0, dy)
+                y0, dh = 0, data.shape[0]
+                p.y_range = Range1d(y0, dh)
                 p.yaxis.axis_label = 'Mel bins'
             else:
-                y0, dy = 0, sr/2
-                p.y_range = Range1d(y0, dy)
+                y0, dh = 0, sr/2
+                p.y_range = Range1d(y0, dh)
                 p.yaxis.axis_label = 'Frequency (Hz)'
-            p.image(image=[data], x=0, y=y0, dw=duration, dh=dy,
-                    color_mapper=mapper)
+            # place image starting at t_start, width=seg_duration
+            p.image(image=[data], x=t_start, y=y0, dw=seg_duration, dh=dh, color_mapper=mapper)
             p.add_layout(ColorBar(color_mapper=mapper, title='dB'), 'right')
 
-        # --- onset markers & legend (first plot only) ---
         if onset_times is not None:
             if isinstance(onset_times, (list, np.ndarray)):
-                # spans
                 for t in onset_times:
-                    p.add_layout(Span(location=t, dimension='height',
-                                      line_color='red', line_dash='dashed'))
-                if i == 0:  # dummy glyph for legend
-                    dummy = p.line([duration+1], [0], line_color='red',
-                                   line_dash='dashed', visible=False,
-                                   legend_label='Onsets')
-
+                    p.add_layout(Span(location=t, dimension='height', line_color='red', line_dash='dashed'))
+                if i == 0:
+                    p.line([t_start + seg_duration + 1], [0], line_color='red', line_dash='dashed',
+                           visible=False, legend_label='Onsets')
             elif isinstance(onset_times, dict):
                 for onset_label, onset_data in onset_times.items():
                     color = onset_data.get('color', 'red')
                     for t in onset_data['times']:
-                        p.add_layout(Span(location=t, dimension='height',
-                                          line_color=color,
-                                          line_dash='dashed'))
-                    if i == 0:  # dummy glyph
-                        p.line([duration+1], [0], line_color=color,
-                               line_dash='dashed', visible=False,
-                               legend_label=onset_label)
-
-            if i == 0:          # only first figure gets the legend
+                        p.add_layout(Span(location=t, dimension='height', line_color=color, line_dash='dashed'))
+                    if i == 0:
+                        p.line([t_start + seg_duration + 1], [0], line_color=color, line_dash='dashed',
+                               visible=False, legend_label=onset_label)
+            if i == 0:
                 p.legend.location = "top_right"
-                # p.legend.click_policy = "hide"
 
         plots.append(p)
-
     return plots
+
 
