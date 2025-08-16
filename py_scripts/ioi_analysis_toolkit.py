@@ -11,7 +11,16 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from scipy.signal import find_peaks
 
-def analyze_iois(df, onset_column):
+def analyze_iois(
+    df,
+    onset_column,
+    *,
+    grayscale: bool = True,
+    font_scale: float = 1.8,
+    dpi: int | None = 300,
+    layout: str | None = None,
+    show_legend: bool = True,
+):
     """
     Calculates Inter-Onset Intervals (IOIs) from a DataFrame and visualizes the results.
 
@@ -36,34 +45,53 @@ def analyze_iois(df, onset_column):
     iois = np.diff(onset_times)
     
     # --- Visualization ---
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
-    fig.suptitle('Inter-Onset Interval (IOI) Analysis', fontsize=16)
+    _layout = (layout or 'horizontal').lower()
+    if _layout == 'vertical':
+        fig, axes = plt.subplots(2, 1, figsize=(10, 12), dpi=dpi, constrained_layout=True)
+        ax1, ax2 = axes
+    else:
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6), dpi=dpi, constrained_layout=True)
+    # Removed figure-level title to avoid redundancy with printed context
 
-    ax1.plot(iois, marker='.', linestyle='-', color='teal')
-    ax1.set_title('IOI Sequence')
-    ax1.set_xlabel('Event Number')
-    ax1.set_ylabel('Interval Duration (s)')
-    ax1.grid(True, linestyle='--', alpha=0.6)
+    ax1.plot(iois, marker=('o' if grayscale else '.'), linestyle='-', color=('black' if grayscale else 'teal'))
+    ax1.set_title('IOI Sequence', fontsize=int(12 * font_scale))
+    ax1.set_xlabel('Event Number', fontsize=int(11 * font_scale))
+    ax1.set_ylabel('Interval Duration (s)', fontsize=int(11 * font_scale))
+    ax1.tick_params(axis='both', which='both', labelsize=int(10 * font_scale))
+    ax1.grid(True, linestyle=':', alpha=0.6)
 
-    ax2.hist(iois, bins=30, color='skyblue', edgecolor='black')
-    ax2.set_title('IOI Distribution (Histogram)')
-    ax2.set_xlabel('Interval Duration (s)')
-    ax2.set_ylabel('Frequency')
-    ax2.grid(True, linestyle='--', alpha=0.6)
+    ax2.hist(iois, bins=30, color=('gray' if grayscale else 'skyblue'), edgecolor='black', alpha=0.85)
+    ax2.set_title('IOI Distribution (Histogram)', fontsize=int(12 * font_scale))
+    ax2.set_xlabel('Interval Duration (s)', fontsize=int(11 * font_scale))
+    ax2.set_ylabel('Frequency', fontsize=int(11 * font_scale))
+    ax2.tick_params(axis='both', which='both', labelsize=int(10 * font_scale))
+    ax2.grid(True, linestyle=':', alpha=0.6)
 
     # --- Statistics ---
     stats = {'mean': np.mean(iois), 'std': np.std(iois)}
     stats['cv'] = stats['std'] / stats['mean'] if stats['mean'] != 0 else 0
     
-    ax2.axvline(stats['mean'], color='red', linestyle='--', label=f"Mean: {stats['mean']:.3f}s")
-    ax2.legend()
+    ax2.axvline(stats['mean'], color=('black' if grayscale else 'red'), linestyle='--', label=f"Mean: {stats['mean']:.3f}s")
+    if show_legend:
+        ax2.legend()
     
     plt.tight_layout(rect=[0, 0, 1, 0.96])
     plt.show()
     
     return iois, stats
 
-def find_optimal_grid_period(iois, min_period=0.1, max_period=1.0, num_steps=1000, top_n_to_label=5):
+def find_optimal_grid_period(
+    iois,
+    min_period=0.1,
+    max_period=1.0,
+    num_steps=1000,
+    top_n_to_label=5,
+    *,
+    grayscale: bool = True,
+    font_scale: float = 1.8,
+    dpi: int | None = 300,
+    show_legend: bool = True,
+):
     """
     Searches for optimal grid periods by minimizing a quantization error function.
 
@@ -85,9 +113,9 @@ def find_optimal_grid_period(iois, min_period=0.1, max_period=1.0, num_steps=100
     minima_indices, _ = find_peaks(-errors, distance=5)
 
     if minima_indices.size == 0:
-        plt.figure(figsize=(12, 6))
-        plt.plot(base_values, errors, label='Quantization Error')
-        plt.title('Grid Period Finding - No Local Minima Found')
+        plt.figure(figsize=(12, 6), dpi=dpi)
+        plt.plot(base_values, errors, label='Quantization Error', color=('black' if grayscale else 'C0'))
+        plt.title('Grid Period Finding - No Local Minima Found', fontsize=int(14 * font_scale))
         plt.show()
         return np.array([]), np.array([])
 
@@ -98,30 +126,69 @@ def find_optimal_grid_period(iois, min_period=0.1, max_period=1.0, num_steps=100
     sorted_indices = np.argsort(candidate_errors)
     
     # --- Plotting ---
-    plt.figure(figsize=(12, 7))
-    plt.plot(base_values, errors, label='Quantization Error', color='royalblue', zorder=1)
-    plt.plot(candidate_periods, candidate_errors, 'o', color='red', markersize=5, label='All Local Minima', zorder=2)
+    fig, ax = plt.subplots(figsize=(12, 7), dpi=dpi, constrained_layout=True)
+    ax.plot(base_values, errors, label='Quantization Error', color=('black' if grayscale else 'royalblue'), zorder=1)
+    # Distinctive local minima marker
+    ax.plot(
+        candidate_periods,
+        candidate_errors,
+        marker=".", linestyle='None',
+        color=('black' if grayscale else 'red'),
+        markersize=8, markeredgewidth=1.8,
+        label='Local Minima', zorder=2,
+    )
 
-    # Highlight the single BEST minimum
+    # Highlight the single BEST minimum (yellow star with strong black edge for grayscale visibility)
     best_idx = minima_indices[sorted_indices[0]]
-    plt.plot(base_values[best_idx], errors[best_idx], '*', color='gold', markersize=15, markeredgecolor='black', label='Best Candidate', zorder=4)
+    ax.plot(
+        base_values[best_idx],
+        errors[best_idx],
+        '*',
+        color=('black' if grayscale else 'gold'),
+        markersize=15,
+        markeredgecolor='black',
+        markeredgewidth=2.0,
+        label='Best Candidate',
+        zorder=5,
+    )
 
-    # Add text labels for the top N candidates
-    for i in sorted_indices[:top_n_to_label]:
-        idx = minima_indices[i]
-        plt.text(base_values[idx] + 0.005, errors[idx], f'{base_values[idx]:.3f}s', color='black', zorder=3,
-                 bbox=dict(facecolor='white', alpha=0.5, edgecolor='none', boxstyle='round,pad=0.2'))
+    # Label only the best candidate value
+    # Place label near but not overlapping the star, with an arrow for clarity
+    _x = base_values[best_idx]
+    _y = errors[best_idx]
+    ax.annotate(
+        f'{_x:.3f}s',
+        xy=(_x, _y),
+        xytext=(_x + 0.02 * (max(base_values)-min(base_values)), _y + 0.05 * (max(errors)-min(errors))),
+        textcoords='data',
+        arrowprops=dict(arrowstyle='-', color='black', lw=1.0),
+        fontsize=int(10 * font_scale),
+        color='black',
+        bbox=dict(facecolor='white', alpha=0.9, edgecolor='black', boxstyle='round,pad=0.2'),
+        zorder=6,
+    )
 
-    plt.title('Grid Period Finding by Error Minimization')
-    plt.xlabel('Candidate Grid Period (s)')
-    plt.ylabel('Error (Sum of Squared Residuals)')
-    plt.grid(True, linestyle='--', alpha=0.6)
-    plt.legend()
+    ax.set_title('Grid Period Finding by Error Minimization', fontsize=int(14 * font_scale))
+    ax.set_xlabel('Candidate Grid Period (s)', fontsize=int(12 * font_scale))
+    ax.set_ylabel('Error (Sum of Squared Residuals)', fontsize=int(12 * font_scale))
+    ax.tick_params(axis='both', which='both', labelsize=int(10 * font_scale))
+    ax.grid(True, linestyle=':', alpha=0.6)
+    if show_legend:
+        ax.legend()
     plt.show()
     
     return candidate_periods[sorted_indices], candidate_errors[sorted_indices]
 
-def evaluate_grid_fit(iois, base_period):
+def evaluate_grid_fit(
+    iois,
+    base_period,
+    *,
+    grayscale: bool = True,
+    font_scale: float = 1.8,
+    dpi: int | None = 300,
+    layout: str | None = None,
+    show_legend: bool = True,
+):
     """
     Evaluates and visualizes how well a given grid period fits the IOI data.
 
@@ -163,17 +230,33 @@ def evaluate_grid_fit(iois, base_period):
     print("--------------------------------------------")
 
     # --- Plotting ---
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
-    fig.suptitle(f'Evaluation of Grid Fit for Period = {base_period:.3f}s', fontsize=16)
+    _layout = (layout or 'horizontal').lower()
+    if _layout == 'vertical':
+        fig, axes = plt.subplots(2, 1, figsize=(10, 12), dpi=dpi, constrained_layout=True)
+        ax1, ax2 = axes
+    else:
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6), dpi=dpi, constrained_layout=True)
+    # Removed figure-level title to avoid redundancy with printed context
 
-    ax1.plot(df_results['Original_IOI'], 'o-', label='Original IOIs', color='teal', alpha=0.8)
-    ax1.plot(df_results['Reconstructed_IOI'], 'x--', label='Reconstructed Grid', color='coral', markersize=8)
-    ax1.set_title('Original vs. Reconstructed IOIs'); ax1.set_xlabel('Event Number'); ax1.set_ylabel('IOI Duration (s)'); ax1.legend(); ax1.grid(True, linestyle='--', alpha=0.6)
+    ax1.plot(df_results['Original_IOI'], 'o-', label='Original IOIs', color=('black' if grayscale else 'teal'), alpha=0.8)
+    ax1.plot(df_results['Reconstructed_IOI'], 'x--', label='Reconstructed Grid', color=('gray' if grayscale else 'coral'), markersize=8)
+    ax1.set_title('Original vs. Reconstructed IOIs', fontsize=int(12 * font_scale))
+    ax1.set_xlabel('Event Number', fontsize=int(11 * font_scale))
+    ax1.set_ylabel('IOI Duration (s)', fontsize=int(11 * font_scale))
+    ax1.tick_params(axis='both', which='both', labelsize=int(10 * font_scale))
+    if show_legend:
+        ax1.legend()
+    ax1.grid(True, linestyle=':', alpha=0.6)
 
-    ax2.hist(df_results['Residual'], bins=20, color='lightcoral', edgecolor='black')
-    ax2.axvline(0, color='black', linestyle='-', label='Perfect Grid Alignment')
-    ax2.axvline(mean_residual_s, color='blue', linestyle='--', label=f'Mean Dev: {mean_residual_ms:+.1f}ms')
-    ax2.set_title('Distribution of Residuals (Timing Deviations)'); ax2.set_xlabel('Residual Duration (s)'); ax2.set_ylabel('Frequency'); ax2.legend(); ax2.grid(True, linestyle='--', alpha=0.6)
+    ax2.hist(df_results['Residual'], bins=20, color=('gray' if grayscale else 'lightcoral'), edgecolor='black')
+    ax2.axvline(mean_residual_s, color=('black' if grayscale else 'blue'), linestyle='--', label=f'Mean Dev: {mean_residual_ms:+.1f}ms')
+    ax2.set_title('Distribution of Residuals (Timing Deviations)', fontsize=int(12 * font_scale))
+    ax2.set_xlabel('Residual Duration (s)', fontsize=int(11 * font_scale))
+    ax2.set_ylabel('Frequency', fontsize=int(11 * font_scale))
+    ax2.tick_params(axis='both', which='both', labelsize=int(10 * font_scale))
+    if show_legend:
+        ax2.legend()
+    ax2.grid(True, linestyle=':', alpha=0.6)
     
     plt.tight_layout(rect=[0, 0, 1, 0.96]);
     plt.show()

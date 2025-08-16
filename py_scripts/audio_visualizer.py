@@ -221,17 +221,26 @@ def visualize_features(
     time_range: Optional[str] = None,
     t_start: Optional[float] = None,
     onsets_are_absolute: bool = False,
-    grayscale: bool = False,
+    grayscale: bool = True,
     grayscale_cmap: str = 'gray',
     font_family: Optional[str] = None,
-    font_scale: float = 1.0,
-    dpi: Optional[int] = None,
+    font_scale: float = 1.8,
+    dpi: Optional[int] = 300,
     figsize: Optional[tuple] = None,
-    save_path: Optional[str] = None
+    save_path: Optional[str] = None,
+    show_legend: bool = True,
+    show_slice_markers: bool = False
 ) -> None:
     # Derive t_start automatically if not provided
     if t_start is None:
         t_start = parse_time_range(time_range)[0] if time_range else 0.0
+
+    # Default feature selection if not provided
+    if not features_to_plot:
+        try:
+            features_to_plot = list(features.keys())
+        except Exception:
+            features_to_plot = []
 
     # Shift onsets if they are relative to the slice
     def _shift_onsets(ot):
@@ -263,6 +272,8 @@ def visualize_features(
             dpi=dpi,
             figsize=figsize,
             save_path=save_path,
+            show_legend=show_legend,
+            show_slice_markers=show_slice_markers,
         )
     elif backend.lower() == 'bokeh':
         from bokeh.io import show
@@ -276,6 +287,8 @@ def visualize_features(
             t_start,
             grayscale=grayscale,
             font_scale=font_scale,
+            show_legend=show_legend,
+            show_slice_markers=show_slice_markers,
         )
         show(column(*plots))
     else:
@@ -283,37 +296,57 @@ def visualize_features(
 
 
 
-import matplotlib.pyplot as plt
-import matplotlib.ticker as ticker
-from matplotlib.lines import Line2D
-import numpy as np
-import librosa
-import librosa.display
-from typing import Dict, Any, Optional, Union, List
-
 def _plot_matplotlib(
     features: Dict[str, Any],
     sr: int,
     hop_length: int,
     onset_times: Optional[Union[np.ndarray, list, dict]],
     features_to_plot: List[str],
-    t_start: float
+    t_start: float,
+    *,
+    grayscale: bool = True,
+    grayscale_cmap: str = 'gray',
+    font_family: Optional[str] = None,
+    font_scale: float = 1.8,
+    dpi: Optional[int] = 300,
+    figsize: Optional[tuple] = None,
+    save_path: Optional[str] = None,
+    show_legend: bool = True,
+    show_slice_markers: bool = False
 ) -> None:
     n = len(features_to_plot)
-    fig, axes = plt.subplots(n, 1, figsize=(14, 4*n), sharex=True, constrained_layout=True)
+    use_figsize = figsize if figsize is not None else (14, 4*n)
+    fig, axes = plt.subplots(n, 1, figsize=use_figsize, sharex=True, constrained_layout=True, dpi=dpi)
     if n == 1:
         axes = [axes]
 
     seg_duration = librosa.get_duration(y=features['waveform'], sr=sr)
+    seg_end = t_start + seg_duration
 
     global_legend_handles = []
     if isinstance(onset_times, dict):
         for label, data_dict in onset_times.items():
-            color = data_dict.get('color', 'r')
-            proxy = Line2D([0], [0], linestyle='--', color=color, label=label)
+            style = (data_dict.get('style') or {})
+            legend_color = 'black' if grayscale else data_dict.get('color', 'r')
+            linestyle = style.get('line_style', '--')
+            line_width = float(style.get('line_width', 1.0))
+            proxy = Line2D([0], [0], linestyle=linestyle, color=legend_color, linewidth=line_width, label=label)
+            dash_pattern = style.get('dash_pattern')
+            if dash_pattern and hasattr(proxy, 'set_dashes'):
+                proxy.set_dashes(dash_pattern)
             global_legend_handles.append(proxy)
 
+    # Font settings per-axis
+    base_fontsize = plt.rcParams.get('font.size', 10.0)
+    scaled = base_fontsize * max(0.1, float(font_scale))
+    label_size = scaled
+    tick_size = scaled * 0.9
+
     for ax, name in zip(axes, features_to_plot):
+        if font_family:
+            for label in (ax.get_xticklabels() + ax.get_yticklabels()):
+                label.set_fontfamily(font_family)
+        ax.tick_params(axis='both', which='both', labelsize=tick_size)
         data = features[name]
         if data.ndim == 1:
             if name == 'waveform':
@@ -322,42 +355,98 @@ def _plot_matplotlib(
             else:
                 times = t_start + librosa.times_like(data, sr=sr, hop_length=hop_length)
                 arr = data
-            ax.plot(times, arr)
-            ax.set_ylabel(FEATURE_LABELS.get(name, name))
+            line_color = 'black' if grayscale else None
+            ax.plot(times, arr, color=line_color)
+            ax.set_ylabel(FEATURE_LABELS.get(name, name), fontsize=label_size, fontfamily=font_family)
         else:
             # Time-aligned spectrogram using explicit x_coords
             frame_times = t_start + librosa.times_like(data, sr=sr, hop_length=hop_length)
             y_axis = 'mel' if 'melspectrogram' in name else 'linear'
             librosa.display.specshow(
                 data, sr=sr, hop_length=hop_length,
-                x_axis='time', y_axis=y_axis, ax=ax, x_coords=frame_times
+                x_axis='time', y_axis=y_axis, ax=ax, x_coords=frame_times,
+                cmap=(grayscale_cmap if grayscale else None)
             )
-            ax.set_ylabel('Freq' + (' (Hz)' if y_axis == 'linear' else ' (Mel)'))
+            ax.set_ylabel('Freq' + (' (Hz)' if y_axis == 'linear' else ' (Mel)'), fontsize=label_size, fontfamily=font_family)
 
         if onset_times is not None:
             ymin, ymax = ax.get_ylim()
+            full_y0, full_y1 = ymin, ymax
             if isinstance(onset_times, (list, np.ndarray)):
-                ax.vlines(onset_times, ymin, ymax, color='r', linestyle='--')
+                # Single-series style (global)
+                onset_color = 'black' if grayscale else 'r'
+                linestyle = '--'
+                line_width = 1.0
+                ax.vlines(onset_times, full_y0, full_y1, color=onset_color, linestyle=linestyle, linewidth=line_width)
             else:
-                for onset_data in onset_times.values():
-                    ax.vlines(onset_data['times'], ymin, ymax,
-                              color=onset_data.get('color', 'r'), linestyle='--')
+                for onset_label, onset_data in onset_times.items():
+                    style = (onset_data.get('style') or {})
+                    color = 'black' if grayscale else onset_data.get('color', 'r')
+                    linestyle = style.get('line_style', '--')
+                    line_width = float(style.get('line_width', 1.0))
+                    tick_h_frac = style.get('tick_height')
+                    tick_pos = (style.get('tick_position') or 'full').lower()
+
+                    # Compute y span
+                    if isinstance(tick_h_frac, (int, float)) and tick_h_frac > 0:
+                        span = (ymax - ymin) * min(1.0, max(0.0, float(tick_h_frac)))
+                        if tick_pos == 'top':
+                            y0, y1 = ymax - span, ymax
+                        elif tick_pos == 'bottom':
+                            y0, y1 = ymin, ymin + span
+                        elif tick_pos == 'middle':
+                            mid = (ymax + ymin) / 2.0
+                            y0, y1 = mid - span/2.0, mid + span/2.0
+                        else:
+                            y0, y1 = full_y0, full_y1
+                    else:
+                        y0, y1 = full_y0, full_y1
+
+                    ax.vlines(onset_data['times'], y0, y1, color=color, linestyle=linestyle, linewidth=line_width)
+
+                    # Optional marker support
+                    marker = style.get('marker')
+                    if marker:
+                        msize = float(style.get('marker_size', 6.0))
+                        if tick_pos == 'bottom':
+                            y_mark = y0
+                        elif tick_pos == 'middle':
+                            y_mark = (y0 + y1) / 2.0
+                        else:
+                            y_mark = y1
+                        ax.scatter(onset_data['times'], np.full_like(np.array(onset_data['times']), y_mark),
+                                   marker=marker, s=msize, c=color)
+
+        # Ensure the view spans exactly the requested slice
+        ax.set_xlim(t_start, seg_end)
+
+        # Optional slice boundary markers for debugging
+        if show_slice_markers:
+            ax.axvline(t_start, color='green', linestyle=':', linewidth=1.0)
+            ax.axvline(seg_end, color='green', linestyle=':', linewidth=1.0)
 
     for ax in axes:
         ax.xaxis.set_major_formatter(ticker.ScalarFormatter())
         ax.tick_params(axis='x', labelbottom=True)
-        ax.set_xlabel('Time (s)')
+        ax.set_xlabel('Time (s)', fontsize=label_size, fontfamily=font_family)
 
-    if global_legend_handles:
+    if show_legend and global_legend_handles:
         fig.legend(handles=global_legend_handles, loc='upper right', borderaxespad=1.0)
+
+    # Apply figure-level font family if requested
+    if font_family:
+        fig.canvas.get_renderer()
+        for text in fig.texts:
+            text.set_fontfamily(font_family)
+
+    # Save if requested
+    if save_path:
+        fig.savefig(save_path, dpi=(dpi if dpi is not None else fig.dpi), bbox_inches='tight', facecolor='white')
 
     plt.show()
 
 
 
-from typing import Dict, Any, List, Optional, Union
-import numpy as np
-import librosa
 from bokeh.plotting import figure
 from bokeh.models import Span
 from bokeh.models import LinearColorMapper, ColorBar
@@ -369,20 +458,36 @@ def _plot_bokeh(
     hop_length: int,
     onset_times: Optional[Union[np.ndarray, list, dict]],
     features_to_plot: List[str],
-    t_start: float
+    t_start: float,
+    *,
+    grayscale: bool = True,
+    font_scale: float = 1.8,
+    show_legend: bool = True,
+    show_slice_markers: bool = False
 ) -> List[Any]:
     plots: List[Any] = []
     seg_duration = librosa.get_duration(y=features['waveform'], sr=sr)
+    seg_end = t_start + seg_duration
     tools = 'pan,wheel_zoom,box_zoom,reset,save'
+    base_pt = 12
+    title_pt = int(base_pt * max(0.1, float(font_scale)) * 1.1)
+    label_pt = int(base_pt * max(0.1, float(font_scale)))
+    tick_pt = int(base_pt * max(0.1, float(font_scale)) * 0.9)
 
     for i, name in enumerate(features_to_plot):
         if i == 0:
             p = figure(width=1400, height=400, x_axis_label='Time (s)', tools=tools)
+            p.x_range = Range1d(t_start, seg_end)
         else:
             p = figure(width=1400, height=400, x_axis_label='Time (s)', tools=tools,
                        x_range=plots[0].x_range)
         label = FEATURE_LABELS.get(name, name.replace('_', ' ').title())
         p.title.text = label
+        p.title.text_font_size = f"{title_pt}pt"
+        p.xaxis.axis_label_text_font_size = f"{label_pt}pt"
+        p.yaxis.axis_label_text_font_size = f"{label_pt}pt"
+        p.xaxis.major_label_text_font_size = f"{tick_pt}pt"
+        p.yaxis.major_label_text_font_size = f"{tick_pt}pt"
 
         data = features[name]
         if data.ndim == 1:
@@ -390,10 +495,10 @@ def _plot_bokeh(
             times = (t_start + np.linspace(0, seg_duration, len(arr))
                      if name == 'waveform'
                      else t_start + librosa.times_like(data, sr=sr, hop_length=hop_length))
-            p.line(times, arr, line_width=1)
+            p.line(times, arr, line_width=1, line_color=('black' if grayscale else 'navy'))
             p.yaxis.axis_label = label
         else:
-            mapper = LinearColorMapper(palette='Viridis256', low=np.min(data), high=np.max(data))
+            mapper = LinearColorMapper(palette=('Greys256' if grayscale else 'Viridis256'), low=np.min(data), high=np.max(data))
             if 'melspectrogram' in name:
                 y0, dh = 0, data.shape[0]
                 p.y_range = Range1d(y0, dh)
@@ -409,22 +514,218 @@ def _plot_bokeh(
         if onset_times is not None:
             if isinstance(onset_times, (list, np.ndarray)):
                 for t in onset_times:
-                    p.add_layout(Span(location=t, dimension='height', line_color='red', line_dash='dashed'))
-                if i == 0:
-                    p.line([t_start + seg_duration + 1], [0], line_color='red', line_dash='dashed',
+                    p.add_layout(Span(location=t, dimension='height', line_color=('black' if grayscale else 'red'), line_dash='dashed'))
+                if show_legend and i == 0:
+                    p.line([t_start + seg_duration + 1], [0], line_color=('black' if grayscale else 'red'), line_dash='dashed',
                            visible=False, legend_label='Onsets')
             elif isinstance(onset_times, dict):
                 for onset_label, onset_data in onset_times.items():
-                    color = onset_data.get('color', 'red')
-                    for t in onset_data['times']:
-                        p.add_layout(Span(location=t, dimension='height', line_color=color, line_dash='dashed'))
-                    if i == 0:
-                        p.line([t_start + seg_duration + 1], [0], line_color=color, line_dash='dashed',
+                    style = (onset_data.get('style') or {})
+                    color = 'black' if grayscale else onset_data.get('color', 'red')
+                    line_dash = style.get('line_style', 'dashed')
+                    line_width = float(style.get('line_width', 1.0))
+                    tick_h_frac = style.get('tick_height')
+                    tick_pos = (style.get('tick_position') or 'full').lower()
+
+                    # Represent as full-height Spans or short segments (ticks)
+                    if isinstance(tick_h_frac, (int, float)) and tick_h_frac > 0:
+                        # Draw short ticks near the top/bottom/middle using segments
+                        # Determine y0/y1 based on tick position
+                        if 'melspectrogram' in name:
+                            y_min, y_max = p.y_range.start, p.y_range.end
+                        else:
+                            y_min, y_max = p.y_range.start, p.y_range.end
+                        span = (y_max - y_min) * min(1.0, max(0.0, float(tick_h_frac)))
+                        if tick_pos == 'top':
+                            y0, y1 = y_max - span, y_max
+                        elif tick_pos == 'bottom':
+                            y0, y1 = y_min, y_min + span
+                        elif tick_pos == 'middle':
+                            mid = (y_max + y_min) / 2.0
+                            y0, y1 = mid - span/2.0, mid + span/2.0
+                        else:
+                            y0, y1 = y_min, y_max
+
+                        # Draw ticks
+                        for t in onset_data['times']:
+                            p.segment(x0=t, y0=y0, x1=t, y1=y1, line_color=color, line_dash=line_dash, line_width=line_width)
+                    else:
+                        # Full-height spans
+                        for t in onset_data['times']:
+                            p.add_layout(Span(location=t, dimension='height', line_color=color, line_dash=line_dash, line_width=line_width))
+                    if show_legend and i == 0:
+                        # Legend proxy with proper dash/width in grayscale or color
+                        p.line([t_start + seg_duration + 1], [0], line_color=color, line_dash=line_dash, line_width=line_width,
                                visible=False, legend_label=onset_label)
-            if i == 0:
+            if show_legend and i == 0:
                 p.legend.location = "top_right"
+
+        # Optional slice boundary markers for debugging
+        if show_slice_markers:
+            from bokeh.models import Span as BokehSpan
+            p.add_layout(BokehSpan(location=t_start, dimension='height', line_color='green', line_dash='dotted', line_width=1))
+            p.add_layout(BokehSpan(location=seg_end, dimension='height', line_color='green', line_dash='dotted', line_width=1))
 
         plots.append(p)
     return plots
 
 
+
+from typing import Dict, List
+
+def visualize_multi_onset_differences(
+    cue_lists: Dict[str, List[float]],
+    ground_truth_key: str,
+    *,
+    grayscale: bool = True,
+    font_scale: float = 1.8,
+    dpi: int | None = 300,
+    show_legend: bool = True,
+    layout: str = 'horizontal',
+) -> None:
+    """
+    Compare multiple detected onset lists against a single ground truth.
+    Grayscale-friendly rendering for print-safe visuals.
+    """
+    if ground_truth_key not in cue_lists:
+        raise ValueError(f"The ground_truth_key '{ground_truth_key}' was not found in cue_lists.")
+
+    truth_times = np.array(cue_lists[ground_truth_key], dtype=float)
+    detected_keys = [key for key in cue_lists if key != ground_truth_key]
+    if not detected_keys:
+        print("No other lists to compare against the ground truth.")
+        return
+
+    n_rows = len(detected_keys)
+    layout = (layout or 'horizontal').lower()
+    if layout == 'vertical':
+        total_rows = n_rows * 2
+        # Two stacked plots per series, one column
+        fig, axes = plt.subplots(total_rows, 1, figsize=(14, 5 * total_rows), squeeze=False,
+                                 constrained_layout=True, dpi=dpi)
+    else:
+        # Default: two columns per series (time error | histogram)
+        fig, axes = plt.subplots(n_rows, 2, figsize=(20, 6 * n_rows), squeeze=False,
+                                 constrained_layout=True, dpi=dpi)
+    title_size = int(16 * font_scale)
+    label_size = int(12 * font_scale)
+    tick_size = int(10 * font_scale)
+    fig.suptitle(f'Onset Detection Comparison against "{ground_truth_key}"', fontsize=title_size)
+
+    for i, key in enumerate(detected_keys):
+        detected_times = np.array(cue_lists[key], dtype=float)
+        min_len = min(len(truth_times), len(detected_times))
+        truth_sliced = truth_times[:min_len]
+        detected_sliced = detected_times[:min_len]
+        error_ms = (detected_sliced - truth_sliced) * 1000.0
+
+        # Plot 1: Timing Error vs truth time
+        if layout == 'vertical':
+            ax1 = axes[2*i, 0]
+        else:
+            ax1 = axes[i, 0]
+        if grayscale:
+            ax1.stem(truth_sliced, error_ms, linefmt='k-', markerfmt='ko', basefmt='k-')
+            zero_color = 'k'
+        else:
+            ax1.stem(truth_sliced, error_ms)
+            zero_color = 'r'
+        ax1.axhline(0, color=zero_color, linestyle='--')
+        ax1.set_title(f'Timing Error: {key}', fontsize=int(14 * font_scale))
+        ax1.set_xlabel(f'Time (s) from "{ground_truth_key}"', fontsize=label_size)
+        ax1.set_ylabel('Error (ms)', fontsize=label_size)
+        ax1.tick_params(axis='both', which='both', labelsize=tick_size)
+        ax1.grid(True, linestyle=':')
+
+        # Plot 2: Error histogram with median line
+        if layout == 'vertical':
+            ax2 = axes[2*i + 1, 0]
+        else:
+            ax2 = axes[i, 1]
+        if grayscale:
+            ax2.hist(error_ms, bins=40, alpha=0.8, edgecolor='black', color='gray')
+            med_color = 'k'
+        else:
+            ax2.hist(error_ms, bins=40, alpha=0.8, edgecolor='black')
+            med_color = 'r'
+        median_error = np.median(error_ms)
+        ax2.axvline(median_error, color=med_color, linestyle='--', label=f'Median Error: {median_error:.2f} ms')
+        ax2.set_title(f'Error Distribution: {key}', fontsize=int(14 * font_scale))
+        ax2.set_xlabel('Error (ms)', fontsize=label_size)
+        ax2.set_ylabel('Count', fontsize=label_size)
+        ax2.tick_params(axis='both', which='both', labelsize=tick_size)
+        if show_legend:
+            ax2.legend()
+        ax2.grid(True, linestyle=':')
+
+    plt.show()
+
+
+def plot_multi_ioi_comparison(
+    cue_lists: Dict[str, List[float]],
+    *,
+    grayscale: bool = True,
+    font_scale: float = 1.8,
+    dpi: int | None = 300,
+    show_legend: bool = True,
+    show_avg_line: bool = True,
+) -> None:
+    """
+    Plot Inter-Onset Intervals (IOI) for multiple onset lists.
+    - cue_lists: mapping label -> list of onset times in seconds
+    - show_avg_line: draw the horizontal average IOI line for each series
+    """
+    import numpy as _np
+    import matplotlib.pyplot as _plt
+
+    labels = list(cue_lists.keys())
+    title_size = int(18 * font_scale)
+    label_size = int(12 * font_scale)
+    tick_size = int(10 * font_scale)
+
+    fig, ax = _plt.subplots(figsize=(18, 8), constrained_layout=True, dpi=dpi)
+
+    if grayscale:
+        dash_styles = ['solid', 'dashed', 'dashdot', 'dotted', (0, (3, 1, 1, 1))]
+        markers = ['o', 's', '^', 'x', 'D']
+    else:
+        cmap = _plt.cm.tab10(_np.linspace(0, 1, max(1, len(labels))))
+
+    for i, (label, times) in enumerate(cue_lists.items()):
+        times_arr = _np.array(times, dtype=float)
+        if times_arr.size < 2:
+            print(f"Warning: List '{label}' has fewer than 2 onsets, cannot calculate IOI. Skipping.")
+            continue
+
+        ioi = _np.diff(times_arr)
+        avg_ioi = float(_np.mean(ioi))
+        legend_label = f"{label} (Avg IOI: {avg_ioi:.3f}s)"
+
+        if grayscale:
+            ax.plot(
+                ioi,
+                marker=markers[i % len(markers)],
+                linestyle=dash_styles[i % len(dash_styles)],
+                markersize=4,
+                color='black',
+                alpha=0.85,
+                label=legend_label,
+            )
+            if show_avg_line:
+                ax.axhline(y=avg_ioi, color='black', linestyle='--', alpha=0.9)
+        else:
+            color = cmap[i % len(labels)] if len(labels) > 0 else 'C0'
+            ax.plot(ioi, marker='o', linestyle='-', markersize=4, label=legend_label, color=color, alpha=0.7)
+            if show_avg_line:
+                ax.axhline(y=avg_ioi, color=color, linestyle='--', alpha=0.9)
+
+    ax.set_title('Inter-Onset Interval (IOI) Comparison', fontsize=title_size)
+    ax.set_xlabel('Onset Event Number', fontsize=label_size)
+    ax.set_ylabel('Time Between Onsets (s)', fontsize=label_size)
+    ax.grid(True, linestyle=':', alpha=0.7)
+    ax.tick_params(axis='both', which='both', labelsize=tick_size)
+
+    if show_legend:
+        ax.legend()
+
+    _plt.show()
