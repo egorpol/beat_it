@@ -262,3 +262,319 @@ def evaluate_grid_fit(
     plt.show()
 
     return df_results
+
+
+# ---------------- Residual Pattern Analysis Utilities ---------------- #
+from typing import Dict as _Dict, Any as _Any
+
+def residual_pattern_analysis(
+    residuals_seconds: np.ndarray,
+    *,
+    moving_avg_window: int = 2,
+    grayscale: bool = True,
+    font_scale: float = 1.8,
+    dpi: int | None = 300,
+    show_residuals: bool = True,
+    show_autocorr: bool = True,
+    show_ssm: bool = True,
+    show_fft: bool = True,
+    show_legend: bool = True,
+    ssm_metric: str = 'l1',
+    window_length: int = 11,
+) -> _Dict[str, _Any]:
+    """
+    Produce residual timing analysis visuals and simple diagnostics.
+
+    - residuals_seconds: 1D array of residuals in seconds
+    - moving_avg_window: centered window size for smoothing (events)
+    - ssm_metric: 'l1' (absolute difference) or 'cosine' (cosine similarity over windows)
+    - window_length: odd length for cosine SSM windows (events)
+    Returns a dict with keys: n, primary_lag, peak_period_events
+    """
+    import matplotlib.pyplot as _plt
+    from pandas.plotting import autocorrelation_plot as _autocorr_plot
+    import pandas as _pd
+    from scipy.signal import find_peaks as _find_peaks
+    from scipy.fft import rfft as _rfft, rfftfreq as _rfftfreq
+
+    residuals_seconds = np.asarray(residuals_seconds, dtype=float)
+    residuals_ms = residuals_seconds * 1000.0
+    n = residuals_ms.size
+    print(f"Analyzing {n} timing residuals...")
+
+    title_size = int(14 * font_scale)
+    label_size = int(12 * font_scale)
+    tick_size = int(10 * font_scale)
+
+    # Method 1: Residuals vs Event with smoothing
+    smoothed = _pd.Series(residuals_ms).rolling(window=max(1, int(moving_avg_window)), center=True).mean().fillna(0)
+    if show_residuals:
+        print("\n--- Method 1: Residuals vs. Event Number ---")
+        _plt.figure(figsize=(15, 5), dpi=dpi)
+        _plt.plot(residuals_ms, 'o-', color=('gray' if grayscale else 'lightgray'), markersize=3, label='Raw Residuals', zorder=1)
+        _plt.plot(smoothed.values, color=('black' if grayscale else 'crimson'), linewidth=2, label=f'{moving_avg_window}-Event Moving Average', zorder=2)
+        _plt.axhline(0, color='black', linestyle='--', linewidth=1.5, label='Perfect Grid Timing')
+        _plt.title('Timing Deviations (Residuals) Over Time', fontsize=title_size)
+        _plt.xlabel('Event (Note) Number', fontsize=label_size)
+        _plt.ylabel('Timing Deviation (ms)\n(Early < 0 | Late > 0)', fontsize=label_size)
+        _plt.tick_params(axis='both', which='both', labelsize=tick_size)
+        _plt.grid(True, linestyle=':', alpha=0.6)
+        if show_legend:
+            _plt.legend()
+        _plt.show()
+
+    primary_lag = None
+    if show_autocorr:
+        # Method 2: Autocorrelation
+        print("\n--- Method 2: Autocorrelation of Residuals ---")
+        _plt.figure(figsize=(15, 5), dpi=dpi)
+        ax_ac = _autocorr_plot(residuals_ms)
+        if grayscale and hasattr(ax_ac, 'get_lines'):
+            for _ln in ax_ac.get_lines():
+                try:
+                    _ln.set_color('black')
+                except Exception:
+                    pass
+        _plt.title('Autocorrelation of Timing Deviations', fontsize=title_size)
+        _plt.xlabel('Lag (in number of events)', fontsize=label_size)
+        _plt.ylabel('Correlation Coefficient', fontsize=label_size)
+        _plt.tick_params(axis='both', which='both', labelsize=tick_size)
+        _plt.grid(True, linestyle=':', alpha=0.6)
+        _plt.show()
+
+        # Numeric autocorr for peak finding
+        analysis_signal = smoothed.values
+        ac = np.correlate(analysis_signal - analysis_signal.mean(), analysis_signal - analysis_signal.mean(), mode='full')
+        ac = ac[ac.size // 2:]
+        peaks, _ = _find_peaks(ac, height=np.std(ac), distance=2)
+        if peaks.size > 0:
+            primary_lag = int(peaks[0])
+            print(f"  > RESULT: Found a significant peak at lag={primary_lag}.")
+            print(f"  > INTERPRETATION: This suggests a repeating pattern every {primary_lag} events.")
+        else:
+            print("  > RESULT: No significant autocorrelation peaks found.")
+            print("  > INTERPRETATION: The timing deviations do not have a strong, regularly repeating pattern.")
+
+    peak_period = None
+    if show_ssm:
+        # Method 3: Self-similarity matrix
+        print("\n--- Method 3: Self-Similarity Matrix ---")
+        metric = (ssm_metric or 'l1').lower()
+        _plt.figure(figsize=(9, 9), dpi=dpi)
+        if metric == 'cosine':
+            # Ensure odd window length
+            if window_length < 1:
+                window_length = 1
+            if window_length % 2 == 0:
+                window_length += 1
+            half = window_length // 2
+            # Build windowed matrix (n, window_length) with edge padding
+            n = residuals_ms.size
+            W = np.empty((n, window_length), dtype=float)
+            for i in range(n):
+                start = i - half
+                end = i + half + 1
+                # Clamp indices
+                left_pad = max(0, -start)
+                right_pad = max(0, end - n)
+                valid_start = max(0, start)
+                valid_end = min(n, end)
+                segment = residuals_ms[valid_start:valid_end]
+                if left_pad > 0:
+                    segment = np.concatenate([np.full(left_pad, residuals_ms[0]), segment])
+                if right_pad > 0:
+                    segment = np.concatenate([segment, np.full(right_pad, residuals_ms[-1])])
+                W[i, :] = segment[:window_length]
+            # Z-score windows to emphasize shape over magnitude
+            W_mean = W.mean(axis=1, keepdims=True)
+            W_std = W.std(axis=1, keepdims=True)
+            Wz = np.where(W_std > 0, (W - W_mean) / W_std, 0.0)
+            # Cosine similarity matrix
+            norms = np.linalg.norm(Wz, axis=1, keepdims=True)
+            denom = (norms @ norms.T) + 1e-12
+            S = (Wz @ Wz.T) / denom
+            # Map from [-1, 1] to [0, 1] for display
+            S_vis = (S + 1.0) / 2.0
+            _plt.imshow(S_vis, cmap=('Greys' if grayscale else 'magma_r'), interpolation='nearest', origin='lower', vmin=0.0, vmax=1.0)
+            _plt.title(f'Self-Similarity (Cosine, window={window_length})', fontsize=title_size)
+            _plt.xlabel('Event Number', fontsize=label_size)
+            _plt.ylabel('Event Number', fontsize=label_size)
+            _plt.tick_params(axis='both', which='both', labelsize=tick_size)
+            cbar = _plt.colorbar()
+            cbar.set_label('Cosine Similarity (0–1)')
+        else:
+            # L1 absolute difference (ms)
+            residuals_col = residuals_ms[:, np.newaxis]
+            residuals_row = residuals_ms[np.newaxis, :]
+            ssm = np.abs(residuals_col - residuals_row)
+            _plt.imshow(ssm, cmap=('Greys' if grayscale else 'magma_r'), interpolation='nearest', origin='lower')
+            _plt.title('Self-Similarity Matrix of Residuals', fontsize=title_size)
+            _plt.xlabel('Event Number', fontsize=label_size)
+            _plt.ylabel('Event Number', fontsize=label_size)
+            _plt.tick_params(axis='both', which='both', labelsize=tick_size)
+            cbar = _plt.colorbar()
+            cbar.set_label('Absolute Difference in Timing (ms)')
+        _plt.show()
+
+    if show_fft:
+        # Method 4: FFT analysis
+        print("\n--- Method 4: FFT of Smoothed Residuals ---")
+        analysis_signal = smoothed.values
+        N = analysis_signal.size
+        amps = np.abs(_rfft(analysis_signal))
+        xf = _rfftfreq(N, 1.0)
+        if xf.size > 1:
+            peaks, _ = _find_peaks(amps, height=np.std(amps))
+            if peaks.size > 0:
+                strongest_idx = int(peaks[np.argmax(amps[peaks])])
+                peak_freq = float(xf[strongest_idx])
+                if peak_freq > 0:
+                    peak_period = 1.0 / peak_freq
+                print(f"  > RESULT: Dominant frequency at {peak_freq:.3f} cycles/event -> period {peak_period:.2f} events.")
+                _plt.figure(figsize=(15, 5), dpi=dpi)
+                _plt.plot(xf[1:], amps[1:], color=('black' if grayscale else 'navy'))
+                _plt.plot(peak_freq, amps[strongest_idx], 'x', color=('black' if grayscale else 'red'), markersize=12,
+                         label=(f'Strongest Cycle: {peak_period:.2f} events' if peak_period else 'Strongest Cycle'))
+                _plt.title('Frequency Spectrum of Smoothed Residuals (FFT)', fontsize=title_size)
+                _plt.xlabel('Frequency (cycles per event)', fontsize=label_size)
+                _plt.ylabel('Amplitude', fontsize=label_size)
+                _plt.tick_params(axis='both', which='both', labelsize=tick_size)
+                _plt.grid(True, which='both', linestyle=':', alpha=0.6)
+                if show_legend:
+                    _plt.legend()
+                _plt.show()
+            else:
+                print("  > RESULT: No dominant frequency component found.")
+        else:
+            print("  > RESULT: Not enough data for FFT analysis.")
+
+    # Summary
+    print("\n[C] Overall Conclusion")
+    if primary_lag is not None and peak_period is not None and abs(primary_lag - peak_period) < 0.5:
+        print(f"  Consistent repeating pattern ~{primary_lag} events; FFT corroborates (~{peak_period:.2f}).")
+        print("  CONCLUSION: Strong evidence of a repeating rhythmic feel.")
+    elif primary_lag is not None:
+        print(f"  Autocorrelation suggests a repeating pattern ~{primary_lag} events.")
+        print("  CONCLUSION: Moderate evidence of a repeating pattern.")
+    elif peak_period is not None:
+        print(f"  FFT suggests a cycle of ~{peak_period:.2f} events without autocorrelation support.")
+        print("  CONCLUSION: Weak/complex periodic pattern suspected.")
+    else:
+        print("  No strong periodicity found; residuals may be random jitter or drift.")
+
+    return {"n": int(n), "primary_lag": (None if primary_lag is None else int(primary_lag)),
+            "peak_period_events": (None if peak_period is None else float(peak_period))}
+
+
+def residual_sensitivity_and_summary(
+    residuals_seconds: np.ndarray,
+    *,
+    window_sizes_to_test: list[int] | None = None,
+    main_moving_avg_window: int = 2,
+    grayscale: bool = True,
+    font_scale: float = 1.8,
+    dpi: int | None = 300,
+    show_legend: bool = True,
+) -> _Dict[str, _Any]:
+    """
+    Replicates the notebook's Advanced Residual Pattern Analysis:
+    - Sensitivity across multiple smoothing windows (prints dominant lags)
+    - Automated analysis with autocorrelation and FFT (prints findings)
+    - Summary plot showing residuals, smoothed trend, and FFT cycle markers
+
+    Returns dict with keys: n, primary_lag, peak_period_events.
+    """
+    import numpy as _np
+    import pandas as _pd
+    import matplotlib.pyplot as _plt
+    from scipy.signal import find_peaks as _find_peaks
+    from scipy.fft import rfft as _rfft, rfftfreq as _rfftfreq
+
+    residuals_seconds = _np.asarray(residuals_seconds, dtype=float)
+    residuals_ms = residuals_seconds * 1000.0
+    n = residuals_ms.size
+    print(f"Analyzing {n} timing residuals...")
+
+    title_size = int(16 * font_scale)
+    label_size = int(12 * font_scale)
+    tick_size = int(10 * font_scale)
+
+    # Sensitivity Analysis
+    print("\n\n" + "="*60)
+    print("--- Method 1: Sensitivity Analysis for Smoothing Window ---")
+    print("="*60)
+    print("Analyzing which patterns are strongest at different levels of smoothing.")
+    if window_sizes_to_test is None:
+        window_sizes_to_test = [2, 3, 4, 8, 12, 16]
+    for window in window_sizes_to_test:
+        if n < window:
+            continue
+        smoothed = _pd.Series(residuals_ms).rolling(window=window, center=True).mean().fillna(0).values
+        ac = _np.correlate(smoothed - smoothed.mean(), smoothed - smoothed.mean(), mode='full')
+        ac = ac[ac.size // 2:]
+        peaks, _ = _find_peaks(ac, height=_np.std(ac) * 1.5, distance=2)
+        if peaks.size > 0:
+            print(f"  - For window size {window:<2}: Strongest pattern repeats every {int(peaks[0])} events.")
+        else:
+            print(f"  - For window size {window:<2}: No dominant repeating pattern found.")
+    print("\n  > INTERPRETATION: Look for a lag number that appears consistently across")
+    print("    different window sizes. A consistent result indicates a robust pattern.")
+
+    # Automated Analysis
+    print("\n\n" + "="*60)
+    print(f"--- Method 2: Detailed Analysis for Window = {main_moving_avg_window} ---")
+    print("="*60)
+    analysis_signal = _pd.Series(residuals_ms).rolling(window=main_moving_avg_window, center=True).mean().fillna(0).values
+    primary_lag = None
+    ac = _np.correlate(analysis_signal - analysis_signal.mean(), analysis_signal - analysis_signal.mean(), mode='full')
+    ac = ac[ac.size // 2:]
+    peaks, _ = _find_peaks(ac, height=_np.std(ac), distance=2)
+    if peaks.size > 0:
+        primary_lag = int(peaks[0])
+        print(f"[Autocorrelation] Found a repeating motif every {primary_lag} events.")
+    else:
+        print("[Autocorrelation] No significant repeating motif found.")
+
+    peak_period = None
+    N = analysis_signal.size
+    yf = _rfft(analysis_signal)
+    xf = _rfftfreq(N, 1)
+    if xf.size > 1:
+        amps = _np.abs(yf)
+        fft_peaks, _ = _find_peaks(amps[1:], height=_np.std(amps[1:]), distance=2)
+        if fft_peaks.size > 0:
+            strongest_peak_idx = int(fft_peaks[_np.argmax(amps[1:][fft_peaks])]) + 1
+            peak_freq = float(xf[strongest_peak_idx])
+            if peak_freq > 0:
+                peak_period = 1.0 / peak_freq
+            print(f"[FFT]             Found a cyclical wave every {peak_period:.2f} events.")
+        else:
+            print("[FFT]             No dominant cyclical wave found.")
+    else:
+        print("[FFT]             Not enough data for FFT analysis.")
+
+    # Summary Visualization
+    print("\n\n" + "="*60)
+    print("--- Method 3: Summary Visualization with Detected Cycles ---")
+    print("="*60)
+    _plt.figure(figsize=(18, 7), dpi=dpi)
+    _plt.plot(residuals_ms, 'o-', color=('gray' if grayscale else 'silver'), markersize=4, alpha=0.7, label='Raw Residuals', zorder=1)
+    _plt.plot(analysis_signal, color=('black' if grayscale else 'navy'), linewidth=2.5, label=f'{main_moving_avg_window}-Event Smoothed Trend', zorder=2)
+    if peak_period is not None and peak_period > 0:
+        plot_period = int(round(peak_period))
+        for i in range(plot_period, n, plot_period):
+            _plt.axvline(x=i, color=('black' if grayscale else 'red'), linestyle=':', linewidth=1.5, alpha=0.8, zorder=3)
+        _plt.axvline(x=-1, color=('black' if grayscale else 'red'), linestyle=':', linewidth=1.5, label=f'FFT Cycle ({peak_period:.1f} events)')
+    _plt.axhline(0, color='black', linestyle='-', linewidth=1.5, label='Perfect Grid Timing', zorder=2)
+    _plt.title('Timing Deviations with Detected Rhythmic Cycles', fontsize=title_size)
+    _plt.xlabel('Event (Note) Number', fontsize=label_size)
+    _plt.ylabel('Timing Deviation (ms)\n(Early < 0 | Late > 0)', fontsize=label_size)
+    _plt.grid(True, which='both', linestyle=':', alpha=0.6)
+    _plt.tick_params(axis='both', which='both', labelsize=tick_size)
+    if show_legend:
+        _plt.legend()
+    _plt.xlim(0, n-1)
+    _plt.show()
+
+    return {"n": int(n), "primary_lag": (None if primary_lag is None else int(primary_lag)),
+            "peak_period_events": (None if peak_period is None else float(peak_period))}

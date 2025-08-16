@@ -3,6 +3,8 @@ import numpy as np
 from typing import Dict, List, Any, Optional, Union
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
+from matplotlib.lines import Line2D
+import matplotlib.patheffects as patheffects
 import librosa.display
 from bokeh.plotting import figure
 from bokeh.models import Span, LinearColorMapper, ColorBar, Range1d
@@ -369,19 +371,29 @@ def _plot_matplotlib(
             )
             ax.set_ylabel('Freq' + (' (Hz)' if y_axis == 'linear' else ' (Mel)'), fontsize=label_size, fontfamily=font_family)
 
+        # Determine if current axis plots a spectrogram-like 2D feature
+        is_spectrogram = (data.ndim != 1)
+
         if onset_times is not None:
             ymin, ymax = ax.get_ylim()
             full_y0, full_y1 = ymin, ymax
             if isinstance(onset_times, (list, np.ndarray)):
                 # Single-series style (global)
-                onset_color = 'black' if grayscale else 'r'
+                onset_color = ('white' if (grayscale and is_spectrogram) else ('black' if grayscale else 'r'))
                 linestyle = '--'
                 line_width = 1.0
-                ax.vlines(onset_times, full_y0, full_y1, color=onset_color, linestyle=linestyle, linewidth=line_width)
+                coll = ax.vlines(onset_times, full_y0, full_y1, color=onset_color, linestyle=linestyle, linewidth=line_width)
+                # Add outline for contrast on spectrogram
+                if grayscale and is_spectrogram and hasattr(coll, 'set_path_effects'):
+                    coll.set_path_effects([
+                        patheffects.Stroke(linewidth=line_width + 2.0, foreground='black'),
+                        patheffects.Normal()
+                    ])
             else:
                 for onset_label, onset_data in onset_times.items():
                     style = (onset_data.get('style') or {})
-                    color = 'black' if grayscale else onset_data.get('color', 'r')
+                    base_color = onset_data.get('color', 'r')
+                    color = ('white' if (grayscale and is_spectrogram) else ('black' if grayscale else base_color))
                     linestyle = style.get('line_style', '--')
                     line_width = float(style.get('line_width', 1.0))
                     tick_h_frac = style.get('tick_height')
@@ -402,7 +414,12 @@ def _plot_matplotlib(
                     else:
                         y0, y1 = full_y0, full_y1
 
-                    ax.vlines(onset_data['times'], y0, y1, color=color, linestyle=linestyle, linewidth=line_width)
+                    coll = ax.vlines(onset_data['times'], y0, y1, color=color, linestyle=linestyle, linewidth=line_width)
+                    if grayscale and is_spectrogram and hasattr(coll, 'set_path_effects'):
+                        coll.set_path_effects([
+                            patheffects.Stroke(linewidth=line_width + 2.0, foreground='black'),
+                            patheffects.Normal()
+                        ])
 
                     # Optional marker support
                     marker = style.get('marker')
@@ -414,8 +431,13 @@ def _plot_matplotlib(
                             y_mark = (y0 + y1) / 2.0
                         else:
                             y_mark = y1
-                        ax.scatter(onset_data['times'], np.full_like(np.array(onset_data['times']), y_mark),
-                                   marker=marker, s=msize, c=color)
+                        pts = ax.scatter(onset_data['times'], np.full_like(np.array(onset_data['times']), y_mark),
+                                         marker=marker, s=msize, c=color)
+                        if grayscale and is_spectrogram and hasattr(pts, 'set_path_effects'):
+                            pts.set_path_effects([
+                                patheffects.Stroke(linewidth=1.0, foreground='black'),
+                                patheffects.Normal()
+                            ])
 
         # Ensure the view spans exactly the requested slice
         ax.set_xlim(t_start, seg_end)
@@ -512,16 +534,24 @@ def _plot_bokeh(
             p.add_layout(ColorBar(color_mapper=mapper, title='dB'), 'right')
 
         if onset_times is not None:
+            is_spectrogram = (data.ndim != 1)
             if isinstance(onset_times, (list, np.ndarray)):
                 for t in onset_times:
-                    p.add_layout(Span(location=t, dimension='height', line_color=('black' if grayscale else 'red'), line_dash='dashed'))
+                    if grayscale and is_spectrogram:
+                        # Outline (black) then foreground (white)
+                        p.add_layout(Span(location=t, dimension='height', line_color='black', line_dash='dashed', line_width=3))
+                        p.add_layout(Span(location=t, dimension='height', line_color='white', line_dash='dashed', line_width=1))
+                    else:
+                        p.add_layout(Span(location=t, dimension='height', line_color=('black' if grayscale else 'red'), line_dash='dashed'))
                 if show_legend and i == 0:
-                    p.line([t_start + seg_duration + 1], [0], line_color=('black' if grayscale else 'red'), line_dash='dashed',
+                    legend_color = ('white' if (grayscale and is_spectrogram) else ('black' if grayscale else 'red'))
+                    p.line([t_start + seg_duration + 1], [0], line_color=legend_color, line_dash='dashed',
                            visible=False, legend_label='Onsets')
             elif isinstance(onset_times, dict):
                 for onset_label, onset_data in onset_times.items():
                     style = (onset_data.get('style') or {})
-                    color = 'black' if grayscale else onset_data.get('color', 'red')
+                    base_color = onset_data.get('color', 'red')
+                    color = ('white' if (grayscale and is_spectrogram) else ('black' if grayscale else base_color))
                     line_dash = style.get('line_style', 'dashed')
                     line_width = float(style.get('line_width', 1.0))
                     tick_h_frac = style.get('tick_height')
@@ -546,16 +576,25 @@ def _plot_bokeh(
                         else:
                             y0, y1 = y_min, y_max
 
-                        # Draw ticks
+                        # Draw ticks (outline + foreground for spectrogram grayscale)
                         for t in onset_data['times']:
-                            p.segment(x0=t, y0=y0, x1=t, y1=y1, line_color=color, line_dash=line_dash, line_width=line_width)
+                            if grayscale and is_spectrogram:
+                                p.segment(x0=t, y0=y0, x1=t, y1=y1, line_color='black', line_dash=line_dash, line_width=line_width+2)
+                                p.segment(x0=t, y0=y0, x1=t, y1=y1, line_color='white', line_dash=line_dash, line_width=line_width)
+                            else:
+                                p.segment(x0=t, y0=y0, x1=t, y1=y1, line_color=color, line_dash=line_dash, line_width=line_width)
                     else:
-                        # Full-height spans
+                        # Full-height spans (outline + foreground for spectrogram grayscale)
                         for t in onset_data['times']:
-                            p.add_layout(Span(location=t, dimension='height', line_color=color, line_dash=line_dash, line_width=line_width))
+                            if grayscale and is_spectrogram:
+                                p.add_layout(Span(location=t, dimension='height', line_color='black', line_dash=line_dash, line_width=line_width+2))
+                                p.add_layout(Span(location=t, dimension='height', line_color='white', line_dash=line_dash, line_width=line_width))
+                            else:
+                                p.add_layout(Span(location=t, dimension='height', line_color=color, line_dash=line_dash, line_width=line_width))
                     if show_legend and i == 0:
-                        # Legend proxy with proper dash/width in grayscale or color
-                        p.line([t_start + seg_duration + 1], [0], line_color=color, line_dash=line_dash, line_width=line_width,
+                        # Legend proxy
+                        legend_color = ('white' if (grayscale and is_spectrogram) else color)
+                        p.line([t_start + seg_duration + 1], [0], line_color=legend_color, line_dash=line_dash, line_width=line_width,
                                visible=False, legend_label=onset_label)
             if show_legend and i == 0:
                 p.legend.location = "top_right"
